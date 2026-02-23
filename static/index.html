@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Futurama Memory Demo</title>
+  <style>
+    /* ─── Reset & Base ────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #080c14;
+      --bg2:      #0e1420;
+      --bg3:      #141c2e;
+      --border:   #1e2a40;
+      --text:     #dce8ff;
+      --muted:    #5a6a8a;
+      --accent:   #00e5a0;
+      --accent2:  #0090ff;
+      --danger:   #ff4455;
+      --font:     'Segoe UI', system-ui, sans-serif;
+      --mono:     'Cascadia Code', 'Fira Code', monospace;
+      --radius:   10px;
+      --char-color: #00e5a0;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ─── Layout ─────────────────────────────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      height: 100vh;
+    }
+
+    /* ─── Header ─────────────────────────────────────────────────────── */
+    header {
+      background: linear-gradient(90deg, #080c14 0%, #0a1228 50%, #080c14 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #00e5a0, #0090ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .logo-sub {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 20px;
+      background: rgba(0,229,160,0.1);
+      border: 1px solid rgba(0,229,160,0.25);
+      color: var(--accent);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* ─── Character Selector ─────────────────────────────────────────── */
+    #char-section {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+    }
+
+    .section-label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    #char-grid {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .char-card {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      transition: all 0.2s;
+      user-select: none;
+    }
+
+    .char-card:hover {
+      border-color: var(--char-color);
+      background: color-mix(in srgb, var(--char-color) 8%, var(--bg3));
+    }
+
+    .char-card.active {
+      border-color: var(--char-color);
+      background: color-mix(in srgb, var(--char-color) 15%, var(--bg3));
+      box-shadow: 0 0 12px color-mix(in srgb, var(--char-color) 30%, transparent);
+    }
+
+    .char-avatar {
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .char-name {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .char-tagline {
+      font-size: 11px;
+      color: var(--muted);
+      display: none;
+    }
+
+    .char-card.active .char-tagline {
+      display: block;
+    }
+
+    /* ─── Main Area ──────────────────────────────────────────────────── */
+    #main {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      overflow: hidden;
+    }
+
+    /* ─── Memory Panel ───────────────────────────────────────────────── */
+    #memory-panel {
+      border-right: 1px solid var(--border);
+      background: var(--bg2);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #memory-panel::-webkit-scrollbar { width: 4px; }
+    #memory-panel::-webkit-scrollbar-track { background: transparent; }
+    #memory-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .panel-header {
+      padding: 16px 18px 10px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg2);
+      z-index: 1;
+    }
+
+    .panel-title {
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .panel-subtitle {
+      font-size: 12px;
+      color: var(--accent);
+      margin-top: 2px;
+    }
+
+    #memory-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      color: var(--muted);
+      text-align: center;
+      padding: 32px;
+      gap: 12px;
+    }
+
+    .empty-icon { font-size: 40px; opacity: 0.4; }
+    .empty-text { font-size: 13px; }
+
+    /* ─── H-MEM Layer Blocks ─────────────────────────────────────────── */
+    .h-mem-layer {
+      padding: 0;
+    }
+
+    .layer-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 18px;
+      cursor: pointer;
+      background: transparent;
+      border: none;
+      width: 100%;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    .layer-header:hover { background: rgba(255,255,255,0.03); }
+
+    .layer-badge {
+      font-size: 9px;
+      font-family: var(--mono);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .layer-1 .layer-badge { background: rgba(0,229,160,0.15); color: #00e5a0; }
+    .layer-2 .layer-badge { background: rgba(0,144,255,0.15); color: #0090ff; }
+    .layer-3 .layer-badge { background: rgba(255,200,50,0.15); color: #ffc832; }
+    .layer-4 .layer-badge { background: rgba(255,80,120,0.15); color: #ff5078; }
+
+    .layer-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+    }
+
+    .layer-expand {
+      color: var(--muted);
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+
+    .layer-header.open .layer-expand { transform: rotate(180deg); }
+
+    .layer-body {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      display: none;
+    }
+
+    .layer-body.open { display: block; }
+
+    .domain-text {
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    .category-item {
+      margin-bottom: 10px;
+    }
+
+    .category-name {
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--accent2);
+      margin-bottom: 3px;
+    }
+
+    .category-desc {
+      font-size: 12px;
+      color: #8a9ab8;
+      line-height: 1.5;
+    }
+
+    .trace-item {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #8a9ab8;
+      line-height: 1.4;
+    }
+
+    .trace-bullet { color: #ffc832; flex-shrink: 0; }
+
+    .quote-item {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: rgba(255,80,120,0.06);
+      border-left: 2px solid rgba(255,80,120,0.3);
+      border-radius: 0 6px 6px 0;
+    }
+
+    .quote-text {
+      font-size: 12px;
+      font-style: italic;
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .quote-context {
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* ─── Chat Panel ─────────────────────────────────────────────────── */
+    #chat-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    #chat-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg2);
+    }
+
+    #chat-char-avatar {
+      font-size: 24px;
+    }
+
+    #chat-char-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--char-color);
+    }
+
+    #chat-char-role {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    #reset-btn {
+      margin-left: auto;
+      padding: 7px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: var(--font);
+    }
+
+    #reset-btn:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(255,68,85,0.1);
+    }
+
+    #chat-placeholder {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      text-align: center;
+      gap: 12px;
+      padding: 32px;
+    }
+
+    .placeholder-icon { font-size: 56px; opacity: 0.3; }
+    .placeholder-text { font-size: 14px; }
+    .placeholder-sub { font-size: 12px; color: #3a4a6a; }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #messages::-webkit-scrollbar { width: 4px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg {
+      display: flex;
+      gap: 12px;
+      max-width: 80%;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .msg-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+    }
+
+    .msg.user .msg-avatar {
+      background: rgba(0,144,255,0.1);
+      border-color: rgba(0,144,255,0.25);
+    }
+
+    .msg-bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+      max-width: 100%;
+    }
+
+    .msg.assistant .msg-bubble {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-top-left-radius: 2px;
+      color: var(--text);
+    }
+
+    .msg.user .msg-bubble {
+      background: rgba(0,144,255,0.12);
+      border: 1px solid rgba(0,144,255,0.2);
+      border-top-right-radius: 2px;
+      color: var(--text);
+    }
+
+    .msg-name {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .msg.user .msg-name { text-align: right; }
+
+    .typing-indicator {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      padding: 4px 0;
+    }
+
+    .typing-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--char-color);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes pulse {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+      40% { opacity: 1; transform: scale(1); }
+    }
+
+    /* ─── Input Area ─────────────────────────────────────────────────── */
+    #input-area {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    #msg-input {
+      flex: 1;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      min-height: 44px;
+      max-height: 160px;
+      transition: border-color 0.2s;
+      line-height: 1.5;
+    }
+
+    #msg-input:focus { border-color: var(--char-color); }
+
+    #msg-input:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #msg-input::placeholder { color: var(--muted); }
+
+    #send-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      border: none;
+      background: var(--accent);
+      color: #000;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+
+    #send-btn:hover:not(:disabled) {
+      background: #00ffb0;
+      transform: scale(1.05);
+    }
+
+    #send-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* ─── No-character state ─────────────────────────────────────────── */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ────────────────────────────────────────────────────── -->
+  <header>
+    <div>
+      <div class="logo">Futurama Memory Demo</div>
+      <div class="logo-sub">H-MEM Personalization Experiment</div>
+    </div>
+    <div class="header-right">
+      <span class="badge">arXiv 2507.22925</span>
+    </div>
+  </header>
+
+  <!-- ── Character Selector ─────────────────────────────────────────── -->
+  <section id="char-section">
+    <div class="section-label">Select a character to talk to</div>
+    <div id="char-grid">
+      <!-- populated by JS -->
+    </div>
+  </section>
+
+  <!-- ── Main: Memory Panel + Chat Panel ────────────────────────────── -->
+  <div id="main">
+
+    <!-- Memory Panel -->
+    <aside id="memory-panel">
+      <div class="panel-header">
+        <div class="panel-title">H-MEM Profile</div>
+        <div class="panel-subtitle" id="memory-char-name">No character selected</div>
+      </div>
+
+      <div id="memory-empty">
+        <div class="empty-icon">🧠</div>
+        <div class="empty-text">Select a character to see<br>their memory profile</div>
+      </div>
+
+      <div id="memory-content" class="hidden"></div>
+    </aside>
+
+    <!-- Chat Panel -->
+    <section id="chat-panel">
+      <div id="chat-header">
+        <span id="chat-char-avatar">💬</span>
+        <div>
+          <div id="chat-char-name" style="color: var(--muted)">No character selected</div>
+          <div id="chat-char-role" style="color: var(--muted); font-size:12px">Choose a character above</div>
+        </div>
+        <button id="reset-btn" onclick="resetChat()">↺ Reset</button>
+      </div>
+
+      <div id="chat-placeholder">
+        <div class="placeholder-icon">🚀</div>
+        <div class="placeholder-text">Select a character to start chatting</div>
+        <div class="placeholder-sub">Each character has a unique H-MEM memory profile<br>extracted from Futurama episode transcripts</div>
+      </div>
+
+      <div id="messages" class="hidden"></div>
+
+      <div id="input-area">
+        <textarea
+          id="msg-input"
+          placeholder="Select a character first..."
+          disabled
+          rows="1"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button id="send-btn" onclick="sendMessage()" disabled>➤</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────────────
+let characters = [];
+let activeCharId = null;
+let messages = [];  // [{role, content}]
+let isStreaming = false;
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const res = await fetch('/api/characters');
+    characters = await res.json();
+    renderCharGrid();
+  } catch (e) {
+    console.error('Failed to load characters', e);
+  }
+}
+
+// ─── Character Grid ─────────────────────────────────────────────────────────
+function renderCharGrid() {
+  const grid = document.getElementById('char-grid');
+  grid.innerHTML = '';
+  for (const c of characters) {
+    const card = document.createElement('div');
+    card.className = 'char-card';
+    card.dataset.id = c.character_id;
+    card.style.setProperty('--char-color', c.color);
+    card.innerHTML = `
+      <span class="char-avatar">${c.avatar}</span>
+      <div>
+        <div class="char-name">${c.short_name}</div>
+        <div class="char-tagline">${c.tagline}</div>
+      </div>`;
+    card.onclick = () => selectCharacter(c.character_id);
+    grid.appendChild(card);
+  }
+}
+
+// ─── Select Character ────────────────────────────────────────────────────────
+async function selectCharacter(charId) {
+  if (charId === activeCharId) return;
+  activeCharId = charId;
+  messages = [];
+
+  // Update card styles
+  document.querySelectorAll('.char-card').forEach(el => {
+    el.classList.remove('active');
+    if (el.dataset.id === charId) el.classList.add('active');
+  });
+
+  const char = characters.find(c => c.character_id === charId);
+
+  // Update CSS variable for accent
+  document.documentElement.style.setProperty('--char-color', char.color);
+
+  // Update chat header
+  document.getElementById('chat-char-avatar').textContent = char.avatar;
+  document.getElementById('chat-char-name').textContent = char.display_name;
+  document.getElementById('chat-char-name').style.color = char.color;
+  document.getElementById('chat-char-role').textContent = char.role;
+
+  // Enable input
+  const input = document.getElementById('msg-input');
+  input.placeholder = `Say something to ${char.short_name}...`;
+  input.disabled = false;
+  document.getElementById('send-btn').disabled = false;
+
+  // Show messages, hide placeholder
+  document.getElementById('chat-placeholder').classList.add('hidden');
+  const msgDiv = document.getElementById('messages');
+  msgDiv.classList.remove('hidden');
+  msgDiv.innerHTML = '';
+
+  // Load profile into memory panel
+  await loadProfile(charId, char);
+}
+
+// ─── Memory Profile ──────────────────────────────────────────────────────────
+async function loadProfile(charId, charMeta) {
+  document.getElementById('memory-char-name').textContent = charMeta.display_name;
+  document.getElementById('memory-empty').classList.add('hidden');
+  const content = document.getElementById('memory-content');
+  content.classList.remove('hidden');
+  content.innerHTML = '<div style="padding:20px; color: var(--muted); font-size:13px">Loading profile…</div>';
+
+  try {
+    const res = await fetch(`/api/profile/${charId}`);
+    const profile = await res.json();
+    renderMemoryProfile(profile, charMeta);
+  } catch(e) {
+    content.innerHTML = `<div style="padding:20px; color: #ff4455; font-size:13px">Failed to load profile: ${e.message}</div>`;
+  }
+}
+
+function renderMemoryProfile(profile, charMeta) {
+  const h = profile.h_mem;
+  const content = document.getElementById('memory-content');
+
+  const sourceNote = profile.profile_source === 'transcript_extraction'
+    ? `Extracted from ${profile.transcript_line_count} transcript lines`
+    : 'Seed profile (run generate_profiles.py to extract from transcripts)';
+
+  content.innerHTML = `
+    <div style="padding: 10px 18px; font-size:10px; color: var(--muted); border-bottom: 1px solid var(--border)">
+      ${sourceNote}
+    </div>
+
+    <!-- Layer 1: Domain -->
+    <div class="h-mem-layer layer-1">
+      <button class="layer-header open" onclick="toggleLayer(this)">
+        <span class="layer-badge">L1</span>
+        <span class="layer-title">Domain — Core Personality</span>
+        <span class="layer-expand">▾</span>
+      </button>
+      <div class="layer-body open">
+        <div class="domain-text">${h.domain.content}</div>
+      </div>
+    </div>
+
+    <!-- Layer 2: Categories -->
+    <div class="h-mem-layer layer-2">
+      <button class="layer-header open" onclick="toggleLayer(this)">
+        <span class="layer-badge">L2</span>
+        <span class="layer-title">Categories — Behavioral Profile</span>
+        <span class="layer-expand">▾</span>
+      </button>
+      <div class="layer-body open">
+        ${h.categories.map(cat => `
+          <div class="category-item">
+            <div class="category-name">${escHtml(cat.name)}</div>
+            <div class="category-desc">${escHtml(cat.description)}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <!-- Layer 3: Memory Traces -->
+    <div class="h-mem-layer layer-3">
+      <button class="layer-header open" onclick="toggleLayer(this)">
+        <span class="layer-badge">L3</span>
+        <span class="layer-title">Memory Traces — Recurring Patterns</span>
+        <span class="layer-expand">▾</span>
+      </button>
+      <div class="layer-body open">
+        ${h.memory_traces.map(t => `
+          <div class="trace-item">
+            <span class="trace-bullet">•</span>
+            <span>${escHtml(t)}</span>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <!-- Layer 4: Episode Quotes -->
+    <div class="h-mem-layer layer-4">
+      <button class="layer-header open" onclick="toggleLayer(this)">
+        <span class="layer-badge">L4</span>
+        <span class="layer-title">Episodes — Grounding Quotes</span>
+        <span class="layer-expand">▾</span>
+      </button>
+      <div class="layer-body open">
+        ${h.episode_quotes.map(q => `
+          <div class="quote-item">
+            <div class="quote-text">"${escHtml(q.quote)}"</div>
+            <div class="quote-context">${escHtml(q.context)}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function toggleLayer(btn) {
+  btn.classList.toggle('open');
+  btn.nextElementSibling.classList.toggle('open');
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────────────
+function addMessage(role, content, streaming = false) {
+  const char = characters.find(c => c.character_id === activeCharId);
+  const msgDiv = document.getElementById('messages');
+
+  const wrapper = document.createElement('div');
+  wrapper.className = `msg ${role}`;
+
+  const avatar = role === 'user' ? '👤' : char.avatar;
+  const name = role === 'user' ? 'You' : char.short_name;
+
+  wrapper.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div>
+      <div class="msg-name">${escHtml(name)}</div>
+      <div class="msg-bubble" id="bubble-latest">
+        ${streaming ? '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>' : escHtml(content)}
+      </div>
+    </div>`;
+
+  msgDiv.appendChild(wrapper);
+  msgDiv.scrollTop = msgDiv.scrollHeight;
+  return wrapper;
+}
+
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text || isStreaming || !activeCharId) return;
+
+  input.value = '';
+  autoResize(input);
+  input.disabled = true;
+  document.getElementById('send-btn').disabled = true;
+  isStreaming = true;
+
+  // Add user message
+  messages.push({ role: 'user', content: text });
+  addMessage('user', text);
+
+  // Add assistant placeholder
+  const assistantWrapper = addMessage('assistant', '', true);
+  const bubble = assistantWrapper.querySelector('.msg-bubble');
+  let responseText = '';
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character_id: activeCharId, messages }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'API error');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    bubble.innerHTML = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.text) {
+            responseText += parsed.text;
+            bubble.textContent = responseText;
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+          }
+        } catch {}
+      }
+    }
+
+    messages.push({ role: 'assistant', content: responseText });
+
+  } catch (e) {
+    bubble.innerHTML = `<span style="color: var(--danger)">Error: ${escHtml(e.message)}</span>`;
+  }
+
+  isStreaming = false;
+  input.disabled = false;
+  input.focus();
+  document.getElementById('send-btn').disabled = false;
+}
+
+function resetChat() {
+  messages = [];
+  const msgDiv = document.getElementById('messages');
+  msgDiv.innerHTML = '';
+  document.getElementById('msg-input').value = '';
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

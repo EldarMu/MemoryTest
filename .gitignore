@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Data (raw corpus is large; profiles are generated)
+data/raw_corpus.txt
+data/raw_transcripts.json
+
+# Keep generated profiles in git so app works without running pipeline
+# data/profiles/  ← intentionally NOT ignored
