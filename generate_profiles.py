@@ -1,89 +1,134 @@
 #!/usr/bin/env python3
 """
-Profile Generation Pipeline
+H-MEM Build Pipeline
 
-Run this script once to:
-  1. Download the Futurama transcript corpus from GitHub
-  2. Parse per-character dialogue lines
-  3. Use Claude to extract H-MEM profiles for each character
-  4. Save profiles to data/profiles/
+Downloads Futurama transcripts, then:
+
+  Step 1: Fit a single TF-IDF + SVD embedding model on ALL character lines
+          (global vocabulary ensures query vectors land in the same space as stored vectors)
+
+  Step 2: For each character, bottom-up H-MEM construction:
+    a. Embed all their transcript lines                     (Layer 4: Episodes)
+    b. K-Means cluster episodes; LLM-summarize each cluster (Layer 3: Memory Traces)
+    c. K-Means cluster traces; LLM-summarize each cluster  (Layer 2: Categories)
+    d. LLM synthesizes all categories into one description  (Layer 1: Domain)
+
+  Step 3: Save tree structure as JSON + vectors as .npz per character
+          Save the fitted embedding model as embedding_model.pkl
+
+The H-MEM files are loaded by app.py at startup.
+Per-message retrieval traverses the hierarchy top-down.
 
 Usage:
+    export ANTHROPIC_API_KEY=sk-...
     python generate_profiles.py
-    python generate_profiles.py --overwrite   # Regenerate existing profiles
-    python generate_profiles.py --seed-only   # Skip transcript download, use seed profiles
-
-The generated profiles are then loaded by the chat app (app.py).
-If profiles don't exist when the app starts, it falls back to seed profiles automatically.
+    python generate_profiles.py --characters bender fry   # subset
+    python generate_profiles.py --overwrite               # rebuild existing
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Futurama character H-MEM profiles")
-    parser.add_argument("--overwrite", action="store_true", help="Regenerate existing profiles")
-    parser.add_argument("--seed-only", action="store_true", help="Write seed profiles without transcript extraction")
-    parser.add_argument("--data-dir", default="data", help="Data directory (default: data/)")
+    parser = argparse.ArgumentParser(description="Build H-MEM structures from Futurama transcripts")
+    parser.add_argument("--characters", nargs="+", help="Character IDs to build (default: all)")
+    parser.add_argument("--overwrite", action="store_true", help="Rebuild even if files exist")
+    parser.add_argument("--data-dir", default="data", help="Root data directory")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
-    profiles_dir = data_dir / "profiles"
+    hmem_dir = data_dir / "hmem"
+    hmem_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("Futurama H-MEM Profile Generator")
+    print("Futurama H-MEM Builder")
     print("=" * 60)
 
-    if args.seed_only:
-        print("\nWriting seed profiles (no transcript extraction)...")
-        from pipeline.extract_profiles import build_seed_profile
-        from pipeline.characters import CHARACTERS
-        import json
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("ERROR: ANTHROPIC_API_KEY not set.")
+        sys.exit(1)
 
-        profiles_dir.mkdir(parents=True, exist_ok=True)
-        for char_id in CHARACTERS:
-            out_path = profiles_dir / f"{char_id}.json"
-            if out_path.exists() and not args.overwrite:
-                print(f"  {char_id}: already exists, skipping")
-                continue
-            profile = build_seed_profile(char_id)
-            with open(out_path, "w") as f:
-                json.dump(profile, f, indent=2)
-            print(f"  {char_id}: seed profile written to {out_path}")
-        print("\nDone! Seed profiles ready.")
-        return
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
 
-    # Full pipeline: download + extract
-    print("\nStep 1: Fetching transcripts...")
+    from pipeline.characters import CHARACTERS
     from pipeline.fetch_transcripts import get_transcripts
+    from pipeline.hmem.embed import EmbeddingModel
+    from pipeline.hmem.build import build
+    from pipeline.hmem.store import save, load
+
+    # ── Step 1: Transcripts ───────────────────────────────────────────────
+    print("\n[1/3] Fetching transcripts...")
     transcripts = get_transcripts(data_dir)
+    total = sum(len(v) for v in transcripts.values())
+    print(f"      {total:,} lines across {len(transcripts)} characters")
 
-    if not transcripts:
-        print("WARNING: No transcript data found. Falling back to seed profiles.")
-        args.seed_only = True
+    target_chars = args.characters or list(CHARACTERS.keys())
+    unknown = set(target_chars) - set(CHARACTERS.keys())
+    if unknown:
+        print(f"ERROR: Unknown character IDs: {unknown}")
+        sys.exit(1)
 
-    print(f"\nStep 2: Extracting H-MEM profiles using Claude...")
-    print("(This requires ANTHROPIC_API_KEY to be set)")
-    from pipeline.extract_profiles import generate_all_profiles
-    profiles = generate_all_profiles(
-        transcripts=transcripts,
-        output_dir=profiles_dir,
-        overwrite=args.overwrite,
-    )
+    # ── Step 2: Fit embedding model on all corpus text ────────────────────
+    # Fit on ALL lines so the vocabulary is global — queries will map
+    # into the same vector space as any character's stored episode vectors.
+    model_path = hmem_dir / "embedding_model.pkl"
+    if model_path.exists() and not args.overwrite:
+        print(f"\n[2/3] Loading existing embedding model from {model_path}")
+        embedding_model = EmbeddingModel.load(model_path)
+    else:
+        print("\n[2/3] Fitting embedding model on full corpus...")
+        all_lines = [line for lines in transcripts.values() for line in lines]
+        print(f"      Fitting on {len(all_lines):,} lines total...")
+        embedding_model = EmbeddingModel()
+        embedding_model.fit(all_lines)
+        embedding_model.save(model_path)
+        print(f"      Saved to {model_path}")
 
-    print(f"\nDone! Generated {len(profiles)} character profiles in {profiles_dir}/")
-    print("\nCharacters available:")
-    for char_id, profile in profiles.items():
-        source = profile.get("profile_source", "unknown")
-        lines = profile.get("transcript_line_count", 0)
-        print(f"  {char_id:15s} ({source}, {lines} transcript lines)")
+    # ── Step 3: Build H-MEM per character ────────────────────────────────
+    print(f"\n[3/3] Building H-MEM for: {', '.join(target_chars)}")
+    built = []
+    skipped = []
 
-    print("\nStart the app with: uvicorn app:app --reload")
+    for char_id in target_chars:
+        meta = CHARACTERS[char_id]
+        lines = transcripts.get(char_id, [])
+
+        if not lines:
+            print(f"\n  [{meta['display_name']}] SKIP -- no transcript lines found")
+            skipped.append(char_id)
+            continue
+
+        if not args.overwrite and load(char_id, hmem_dir) is not None:
+            print(f"\n  [{meta['display_name']}] already built (--overwrite to rebuild)")
+            skipped.append(char_id)
+            continue
+
+        print(f"\n  [{meta['display_name']}]")
+        try:
+            hmem = build(
+                character_id=char_id,
+                display_name=meta["display_name"],
+                lines=lines,
+                client=client,
+                embedding_model=embedding_model,
+            )
+            save(hmem, hmem_dir)
+            built.append(char_id)
+        except Exception as e:
+            print(f"  ERROR building {char_id}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"\nSummary -- built: {built} | skipped: {skipped}")
+    print(f"H-MEM files in: {hmem_dir}/")
+    print("Start the app:   uvicorn app:app --reload --port 8000")
 
 
 if __name__ == "__main__":

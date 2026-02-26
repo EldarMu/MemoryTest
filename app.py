@@ -1,11 +1,13 @@
 """
-Futurama Personalization Demo — FastAPI Backend
+Futurama H-MEM Chat Demo — FastAPI Backend
 
-Demonstrates H-MEM (Hierarchical Memory) inspired personalization:
-  - Four-layer character memory profiles (Domain → Category → Trace → Episode)
-  - Profiles extracted from Futurama transcripts via pipeline/
-  - Streaming chat endpoint with character-specific system prompts
-  - Memory profile served alongside chat so users can see what's shaping responses
+Per-message flow:
+  1. User sends message to /api/chat
+  2. Embed the query (sentence-transformers, local)
+  3. Top-down H-MEM retrieval: Domain → relevant Categories → relevant Traces → relevant Episodes
+  4. Build a focused system prompt from the retrieved nodes
+  5. Stream Claude's response
+  6. Also return the retrieval result so the frontend can visualize what was activated
 
 Run:
     uvicorn app:app --reload --port 8000
@@ -26,105 +28,86 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-app = FastAPI(title="Futurama Memory Demo")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Futurama H-MEM Demo")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Profile loading
+# Startup: load H-MEM structures
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_all_profiles() -> dict:
-    """Load profiles from disk; fall back to seed profiles if not generated yet."""
-    from pipeline.extract_profiles import load_profiles
-    profiles_dir = Path("data/profiles")
-    profiles = load_profiles(profiles_dir)
-    return profiles
-
-
-PROFILES: dict = {}
+HMEM: dict = {}              # char_id → full H-MEM structure (with _vecs)
+CHARACTERS: dict = {}        # char_id → metadata
+EMBEDDING_MODEL = None       # shared EmbeddingModel (fitted on full corpus)
 
 
 @app.on_event("startup")
 async def startup():
-    global PROFILES
-    PROFILES = load_all_profiles()
-    print(f"Loaded {len(PROFILES)} character profiles")
-    for char_id, p in PROFILES.items():
-        source = p.get("profile_source", "unknown")
-        print(f"  {char_id}: {source}")
+    global HMEM, CHARACTERS, EMBEDDING_MODEL
+
+    from pipeline.characters import CHARACTERS as CHAR_META
+    CHARACTERS = CHAR_META
+
+    hmem_dir = Path("data/hmem")
+
+    # Load embedding model (needed for query embedding at retrieval time)
+    model_path = hmem_dir / "embedding_model.pkl"
+    if model_path.exists():
+        from pipeline.hmem.embed import EmbeddingModel
+        EMBEDDING_MODEL = EmbeddingModel.load(model_path)
+        print(f"Loaded embedding model from {model_path}")
+    else:
+        print("WARNING: No embedding model found. Run: python generate_profiles.py")
+
+    from pipeline.hmem.store import load_all
+    HMEM = load_all(hmem_dir, list(CHAR_META.keys()))
+
+    if not HMEM:
+        print("WARNING: No H-MEM structures found in data/hmem/")
+        print("         Run: python generate_profiles.py")
+    else:
+        print(f"Loaded H-MEM for: {list(HMEM.keys())}")
+        for char_id, h in HMEM.items():
+            s = h["stats"]
+            print(f"  {char_id}: {s['n_episodes']} eps / {s['n_traces']} traces / {s['n_categories']} cats")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# H-MEM system prompt builder
+# System prompt — built from retrieved memories, not a static template
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_system_prompt(profile: dict) -> str:
-    """
-    Construct a system prompt from the H-MEM profile layers.
-
-    The prompt is structured hierarchically — Domain first (most abstract),
-    then Categories, then Memory Traces, then Episode Quotes — mirroring
-    the H-MEM paper's retrieval order from abstract to specific.
-    """
-    h = profile["h_mem"]
-    name = profile["display_name"]
-    short = profile["short_name"]
-    role = profile["role"]
+def build_system_prompt(char_meta: dict, retrieved: dict) -> str:
+    name = char_meta["display_name"]
+    short = char_meta["short_name"]
+    role = char_meta["role"]
 
     lines = [
         f"You are {name} from the animated TV show Futurama.",
         f"Role: {role}",
         "",
-        "═══════════════════════════════════════",
-        "LAYER 1 — DOMAIN (Core Personality)",
-        "═══════════════════════════════════════",
-        h["domain"]["content"],
+        "The following is your memory, retrieved hierarchically for this conversation:",
         "",
-        "═══════════════════════════════════════",
-        "LAYER 2 — CATEGORIES (Behavioral Profile)",
-        "═══════════════════════════════════════",
+        "── DOMAIN (core personality) ──",
+        retrieved["domain"]["text"],
+        "",
+        "── RELEVANT CATEGORIES ──",
     ]
+    for cat in retrieved["categories"]:
+        lines.append(f"• {cat['text']}")
 
-    for cat in h["categories"]:
-        lines.append(f"[{cat['name']}]")
-        lines.append(cat["description"])
-        lines.append("")
+    lines += ["", "── RELEVANT MEMORY TRACES ──"]
+    for tr in retrieved["traces"]:
+        lines.append(f"• {tr['text']}")
 
-    lines += [
-        "═══════════════════════════════════════",
-        "LAYER 3 — MEMORY TRACES (Recurring Patterns)",
-        "═══════════════════════════════════════",
-    ]
-    for trace in h["memory_traces"]:
-        lines.append(f"• {trace}")
+    lines += ["", "── RETRIEVED EPISODES (grounding examples) ──"]
+    for ep in retrieved["episodes"]:
+        lines.append(f'"{ep["text"]}"')
 
     lines += [
         "",
-        "═══════════════════════════════════════",
-        "LAYER 4 — EPISODE QUOTES (Grounding Examples)",
-        "═══════════════════════════════════════",
+        f"Stay fully in character as {short}. Never break character or refer to yourself as an AI.",
+        f"Use {short}'s vocabulary, speech patterns, and worldview as revealed above.",
+        "Responses should be conversational and appropriately concise.",
     ]
-    for eq in h["episode_quotes"]:
-        lines.append(f'"{eq["quote"]}" — {eq["context"]}')
-
-    lines += [
-        "",
-        "═══════════════════════════════════════",
-        "INSTRUCTIONS",
-        "═══════════════════════════════════════",
-        f"Stay fully in character as {short} at all times.",
-        "Respond as {short} would in the show — use their vocabulary, speech patterns, and worldview.".replace("{short}", short),
-        "Keep responses conversational and appropriately concise.",
-        "Never break character. Never refer to yourself as an AI.",
-        "You are not playing a role — you ARE this character.",
-    ]
-
     return "\n".join(lines)
 
 
@@ -133,7 +116,7 @@ def build_system_prompt(profile: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Message(BaseModel):
-    role: str  # "user" or "assistant"
+    role: str
     content: str
 
 
@@ -148,28 +131,55 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/characters")
 async def list_characters():
-    """Return all character metadata (without full h_mem profiles for brevity)."""
-    return [
-        {
-            "character_id": p["character_id"],
-            "display_name": p["display_name"],
-            "short_name": p["short_name"],
-            "role": p["role"],
-            "avatar": p["avatar"],
-            "color": p["color"],
-            "color_dark": p["color_dark"],
-            "tagline": p["tagline"],
-        }
-        for p in PROFILES.values()
-    ]
+    """Character list. Flags which ones have H-MEM built."""
+    result = []
+    for char_id, meta in CHARACTERS.items():
+        entry = dict(meta)
+        entry["hmem_ready"] = char_id in HMEM
+        if char_id in HMEM:
+            entry["stats"] = HMEM[char_id]["stats"]
+        result.append(entry)
+    return result
 
 
-@app.get("/api/profile/{character_id}")
-async def get_profile(character_id: str):
-    """Return the full H-MEM profile for a character."""
-    if character_id not in PROFILES:
-        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
-    return PROFILES[character_id]
+@app.get("/api/hmem/{character_id}")
+async def get_hmem_overview(character_id: str):
+    """
+    Return the full H-MEM tree structure (no vectors) for display in the UI.
+    Shows all domains, categories, traces, and episode counts.
+    """
+    if character_id not in HMEM:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No H-MEM built for '{character_id}'. Run: python generate_profiles.py"
+        )
+    h = HMEM[character_id]
+    return {
+        "character_id": character_id,
+        "display_name": h["display_name"],
+        "stats": h["stats"],
+        "domain": h["domain"]["text"],
+        "categories": [
+            {
+                "index": i,
+                "text": c["text"],
+                "n_traces": len(c["trace_ptrs"]),
+            }
+            for i, c in enumerate(h["categories"])
+        ],
+        "memory_traces": [
+            {
+                "index": i,
+                "text": t["text"],
+                "n_episodes": len(t["episode_ptrs"]),
+                "category_idx": next(
+                    (ci for ci, c in enumerate(h["categories"]) if i in c["trace_ptrs"]),
+                    None
+                ),
+            }
+            for i, t in enumerate(h["memory_traces"])
+        ],
+    }
 
 
 @app.post("/api/chat")
@@ -177,24 +187,49 @@ async def chat(request: ChatRequest):
     """
     Streaming chat endpoint.
 
-    Builds the character system prompt from their H-MEM profile and
-    streams Claude's response back as server-sent events.
+    For each message:
+      - retrieves relevant H-MEM nodes for the query
+      - builds a focused system prompt from those nodes
+      - streams Claude's response as SSE
+      - emits a final 'retrieval' event with the activated nodes (for UI display)
     """
-    if request.character_id not in PROFILES:
-        raise HTTPException(status_code=404, detail=f"Character '{request.character_id}' not found")
+    char_id = request.character_id
 
-    profile = PROFILES[request.character_id]
-    system_prompt = build_system_prompt(profile)
+    if char_id not in CHARACTERS:
+        raise HTTPException(status_code=404, detail=f"Unknown character '{char_id}'")
+
+    if char_id not in HMEM:
+        raise HTTPException(
+            status_code=422,
+            detail=f"H-MEM not built for '{char_id}'. Run: python generate_profiles.py"
+        )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    char_meta = CHARACTERS[char_id]
+    hmem = HMEM[char_id]
 
+    # Extract the most recent user message for retrieval
+    user_messages = [m for m in request.messages if m.role == "user"]
+    query = user_messages[-1].content if user_messages else ""
+
+    # Top-down H-MEM retrieval (pass the shared embedding model)
+    from pipeline.hmem.retrieve import retrieve
+    retrieved = retrieve(hmem, query, embedding_model=EMBEDDING_MODEL)
+
+    # Build system prompt from retrieved memories
+    system_prompt = build_system_prompt(char_meta, retrieved)
+
+    client = anthropic.Anthropic(api_key=api_key)
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
     async def generate() -> AsyncIterator[str]:
+        # First: emit the retrieval event so the UI can update immediately
+        yield f"data: {json.dumps({'type': 'retrieval', 'data': retrieved})}\n\n"
+
+        # Then: stream the LLM response
         with client.messages.stream(
             model="claude-opus-4-5",
             max_tokens=1024,
@@ -202,25 +237,21 @@ async def chat(request: ChatRequest):
             messages=messages,
         ) as stream:
             for text in stream.text_stream:
-                # SSE format: data: <json>\n\n
-                yield f"data: {json.dumps({'text': text})}\n\n"
+                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Serve the frontend
+# Static frontend
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Mount static files last so API routes take precedence
 static_dir = Path("static")
 static_dir.mkdir(exist_ok=True)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
